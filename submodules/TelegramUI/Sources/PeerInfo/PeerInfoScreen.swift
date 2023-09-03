@@ -10901,6 +10901,8 @@ private final class ContextControllerContentSourceImpl: ContextControllerContent
     
     let passthroughTouches: Bool
     
+    var sourceBackgroundColor: UIColor?
+    
     init(controller: ViewController, sourceNode: ASDisplayNode?, sourceRect: CGRect = CGRect(origin: CGPoint(), size: CGSize()), passthroughTouches: Bool = false) {
         self.controller = controller
         self.sourceNode = sourceNode

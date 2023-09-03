@@ -22,6 +22,7 @@ open class ContextControllerSourceNode: ContextReferenceContentNode {
     public weak var additionalActivationProgressLayer: CALayer?
     public var targetNodeForActivationProgress: ASDisplayNode?
     public var targetNodeForActivationProgressContentRect: CGRect?
+    public var customContextTransitionInfo: (() -> (UIView?, UIView?))?
     
     public func cancelGesture() {
         self.contextGesture?.cancel()

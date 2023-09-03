@@ -253,8 +253,10 @@ private final class ContextControllerNode: ViewControllerTracingNode, UIScrollVi
     private var validLayout: ContainerViewLayout?
     
     private let effectView: UIVisualEffectView
+    private let customBlurView: CustomBlurView
     private var propertyAnimator: AnyObject?
     private var displayLinkAnimator: DisplayLinkAnimator?
+    private var blurDisplayLinkAnimator: DisplayLinkAnimator?
     private let dimNode: ASDisplayNode
     private let withoutBlurDimNode: ASDisplayNode
     private let dismissNode: ASDisplayNode
@@ -269,6 +271,7 @@ private final class ContextControllerNode: ViewControllerTracingNode, UIScrollVi
     private var originalProjectedContentViewFrame: (CGRect, CGRect)?
     private var contentAreaInScreenSpace: CGRect?
     private var customPosition: CGPoint?
+    private let contentShadowContainerNode: ASDisplayNode
     private let contentContainerNode: ContextContentContainerNode
     private var actionsContainerNode: ContextActionsContainerNode
     
@@ -286,6 +289,7 @@ private final class ContextControllerNode: ViewControllerTracingNode, UIScrollVi
     private let itemsDisposable = MetaDisposable()
     
     private let blurBackground: Bool
+    private let blurLayerBackground: Bool
     
     var overlayWantsToBeBelowKeyboard: Bool {
         if let presentationNode = self.presentationNode {
@@ -330,6 +334,8 @@ private final class ContextControllerNode: ViewControllerTracingNode, UIScrollVi
             self.effectView.alpha = 0.0
         }
         
+        self.customBlurView = CustomBlurView(gradientMask: UIImage(color: UIColor.black), maxBlurRadius: 0.0)
+        
         self.dimNode = ASDisplayNode()
         self.dimNode.backgroundColor = presentationData.theme.contextMenu.dimColor
         self.dimNode.alpha = 0.0
@@ -354,6 +360,8 @@ private final class ContextControllerNode: ViewControllerTracingNode, UIScrollVi
             self.scrollNode.view.contentInsetAdjustmentBehavior = .never
         }
         
+        self.contentShadowContainerNode = ASDisplayNode()
+        
         self.contentContainerNode = ContextContentContainerNode()
         
         var feedbackTap: (() -> Void)?
@@ -366,6 +374,12 @@ private final class ContextControllerNode: ViewControllerTracingNode, UIScrollVi
             blurBackground = false
         }
         self.blurBackground = blurBackground
+            
+        var blurLayerBackground = false
+        if case .controller = source {
+            blurLayerBackground = true
+        }
+        self.blurLayerBackground = blurLayerBackground
             
         self.actionsContainerNode = ContextActionsContainerNode(presentationData: presentationData, items: ContextController.Items(), getController: { [weak controller] in
             return controller
@@ -390,7 +404,9 @@ private final class ContextControllerNode: ViewControllerTracingNode, UIScrollVi
         self.scrollNode.view.delegate = self
         
         if blurBackground {
-            self.view.addSubview(self.effectView)
+            if !blurLayerBackground {
+                self.view.addSubview(self.effectView)
+            }
             self.addSubnode(self.dimNode)
             self.addSubnode(self.withoutBlurDimNode)
         }
@@ -802,11 +818,25 @@ private final class ContextControllerNode: ViewControllerTracingNode, UIScrollVi
                 let contentParentNode = ContextControllerContentNode(sourceView: sourceView, controller: source.controller, tapped: { [weak self] in
                     self?.attemptTransitionControllerIntoNavigation()
                 })
+                self.actionsContainerNode.alpha = 0.0
+                self.contentContainerNode.alpha = 0.0
+                self.contentShadowContainerNode.alpha = 0.0
+                
                 self.contentContainerNode.contentNode = .controller(contentParentNode)
-                self.scrollNode.addSubnode(self.contentContainerNode)
                 self.contentContainerNode.clipsToBounds = true
-                self.contentContainerNode.cornerRadius = 14.0
+                self.contentContainerNode.cornerRadius = 0.0//14.0
+                
+                self.contentShadowContainerNode.backgroundColor = self.presentationData.theme.chatList.backgroundColor
+                self.contentShadowContainerNode.cornerRadius = 0.0
+                self.contentShadowContainerNode.layer.masksToBounds = false
+                self.contentShadowContainerNode.shadowColor = UIColor(rgb: 0x000000, alpha: 0.2).cgColor
+                self.contentShadowContainerNode.shadowRadius = 3.0
+                self.contentShadowContainerNode.shadowOffset = CGSize()
+                self.contentShadowContainerNode.shadowOpacity = 1.0
+                
                 self.contentContainerNode.addSubnode(contentParentNode)
+                self.scrollNode.addSubnode(self.contentShadowContainerNode)
+                self.scrollNode.addSubnode(self.contentContainerNode)
                 
                 let projectedFrame = convertFrame(sourceNodeRect, from: sourceView, to: self.view)
                 self.originalProjectedContentViewFrame = (projectedFrame, projectedFrame)
@@ -860,42 +890,69 @@ private final class ContextControllerNode: ViewControllerTracingNode, UIScrollVi
             self.updateLayout(layout: validLayout, transition: .immediate, previousActionsContainerNode: nil)
         }
         
-        if !self.dimNode.isHidden {
-            self.dimNode.alpha = 1.0
-            self.dimNode.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.2 * animationDurationFactor)
-        } else {
-            self.withoutBlurDimNode.alpha = 1.0
-            self.withoutBlurDimNode.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.2 * animationDurationFactor)
-        }
-        
-        if #available(iOS 10.0, *) {
-            if let propertyAnimator = self.propertyAnimator {
-                let propertyAnimator = propertyAnimator as? UIViewPropertyAnimator
-                propertyAnimator?.stopAnimation(true)
-            }
-            self.effectView.effect = makeCustomZoomBlurEffect(isLight: presentationData.theme.rootController.keyboardColor == .light)
-            self.effectView.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.2 * animationDurationFactor)
-            self.propertyAnimator = UIViewPropertyAnimator(duration: 0.2 * animationDurationFactor * UIView.animationDurationFactor(), curve: .easeInOut, animations: {
-            })
-        }
-        
-        if let _ = self.propertyAnimator {
+        if blurLayerBackground {
             if #available(iOSApplicationExtension 10.0, iOS 10.0, *) {
-                self.displayLinkAnimator = DisplayLinkAnimator(duration: 0.2 * animationDurationFactor * UIView.animationDurationFactor(), from: 0.0, to: 1.0, update: { [weak self] value in
-                    (self?.propertyAnimator as? UIViewPropertyAnimator)?.fractionComplete = value
-                }, completion: { [weak self] in
+                if case let .controller(controller) = self.source,
+                   let rootView = controller.navigationController?.rootView {
+                    let scale: CGFloat = 0.9
+                    rootView.layer.animateScale(from: 1.0, to: scale, duration: 0.3 * animationDurationFactor, removeOnCompletion: false)
+                    self.customBlurView.frame = rootView.frame.applying(CGAffineTransform(scaleX: 1 / scale, y: 1 / scale))
+                    self.customBlurView.center = rootView.center
+                    self.customBlurView.updateBlurRadius(0.0)
+                    rootView.addSubview(self.customBlurView)
+                    self.displayLinkAnimator = DisplayLinkAnimator(duration: 0.3 * animationDurationFactor * UIView.animationDurationFactor(), from: 0.0, to: 1.0, update: { [weak customBlurView] value in
+                        customBlurView?.updateBlurRadius(20.0 * value)
+                    }, completion: { [weak self] in
+                        self?.didCompleteAnimationIn = true
+                        self?.hapticFeedback.prepareTap()
+                        self?.actionsContainerNode.animateIn()
+                    })
+                }
+            }
+            
+            if !self.dimNode.isHidden {
+                self.dimNode.alpha = 0.5
+                self.dimNode.layer.animateAlpha(from: 0.0, to: 0.5, duration: 0.3 * animationDurationFactor)
+            }
+        } else {
+            if !self.dimNode.isHidden {
+                self.dimNode.alpha = 1.0
+                self.dimNode.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.2 * animationDurationFactor)
+            } else {
+                self.withoutBlurDimNode.alpha = 1.0
+                self.withoutBlurDimNode.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.2 * animationDurationFactor)
+            }
+            
+            if #available(iOS 10.0, *) {
+                if let propertyAnimator = self.propertyAnimator {
+                    let propertyAnimator = propertyAnimator as? UIViewPropertyAnimator
+                    propertyAnimator?.stopAnimation(true)
+                }
+                self.effectView.effect = makeCustomZoomBlurEffect(isLight: presentationData.theme.rootController.keyboardColor == .light)
+                self.effectView.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.2 * animationDurationFactor)
+                self.propertyAnimator = UIViewPropertyAnimator(duration: 0.2 * animationDurationFactor * UIView.animationDurationFactor(), curve: .easeInOut, animations: {
+                    
+                })
+            }
+            
+            if let _ = self.propertyAnimator {
+                if #available(iOSApplicationExtension 10.0, iOS 10.0, *) {
+                    self.displayLinkAnimator = DisplayLinkAnimator(duration: 0.2 * animationDurationFactor * UIView.animationDurationFactor(), from: 0.0, to: 1.0, update: { [weak self] value in
+                        (self?.propertyAnimator as? UIViewPropertyAnimator)?.fractionComplete = value
+                    }, completion: { [weak self] in
+                        self?.didCompleteAnimationIn = true
+                        self?.hapticFeedback.prepareTap()
+                        self?.actionsContainerNode.animateIn()
+                    })
+                }
+            } else {
+                UIView.animate(withDuration: 0.2 * animationDurationFactor, animations: {
+                    self.effectView.effect = makeCustomZoomBlurEffect(isLight: self.presentationData.theme.rootController.keyboardColor == .light)
+                }, completion: { [weak self] _ in
                     self?.didCompleteAnimationIn = true
-                    self?.hapticFeedback.prepareTap()
                     self?.actionsContainerNode.animateIn()
                 })
             }
-        } else {
-            UIView.animate(withDuration: 0.2 * animationDurationFactor, animations: {
-                self.effectView.effect = makeCustomZoomBlurEffect(isLight: self.presentationData.theme.rootController.keyboardColor == .light)
-            }, completion: { [weak self] _ in
-                self?.didCompleteAnimationIn = true
-                self?.actionsContainerNode.animateIn()
-            })
         }
         
         if let contentNode = self.contentContainerNode.contentNode {
@@ -958,22 +1015,12 @@ private final class ContextControllerNode: ViewControllerTracingNode, UIScrollVi
                 }
                 
                 extracted.willUpdateIsExtractedToContextPreview?(true, .animated(duration: 0.2, curve: .easeInOut))
-            case .controller:
+            case let .controller(controller):
                 let springDuration: Double = 0.52 * animationDurationFactor
                 let springDamping: CGFloat = 110.0
-                
-                self.actionsContainerNode.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.2 * animationDurationFactor)
-                self.actionsContainerNode.layer.animateSpring(from: 0.1 as NSNumber, to: 1.0 as NSNumber, keyPath: "transform.scale", duration: springDuration, initialVelocity: 0.0, damping: springDamping)
-                self.contentContainerNode.allowsGroupOpacity = true
-                self.contentContainerNode.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.2 * animationDurationFactor, completion: { [weak self] _ in
-                    self?.contentContainerNode.allowsGroupOpacity = false
-                })
-                
-                if let originalProjectedContentViewFrame = self.originalProjectedContentViewFrame {
-                    let localSourceFrame = self.view.convert(CGRect(origin: CGPoint(x: originalProjectedContentViewFrame.1.minX, y: originalProjectedContentViewFrame.1.minY), size: CGSize(width: originalProjectedContentViewFrame.1.width, height: originalProjectedContentViewFrame.1.height)), to: self.scrollNode.view)
-                    
-                    self.contentContainerNode.layer.animateSpring(from: min(localSourceFrame.width / self.contentContainerNode.frame.width, localSourceFrame.height / self.contentContainerNode.frame.height) as NSNumber, to: 1.0 as NSNumber, keyPath: "transform.scale", duration: springDuration, initialVelocity: 0.0, damping: springDamping)
-                    
+
+                if let originalProjectedContentViewFrame = self.originalProjectedContentViewFrame,
+                   let (leftAvatarView, contentView) = (controller.sourceView.asyncdisplaykit_node as? ContextControllerSourceNode)?.customContextTransitionInfo?() {
                     switch self.source {
                     case let .controller(controller):
                         controller.animatedIn()
@@ -981,24 +1028,151 @@ private final class ContextControllerNode: ViewControllerTracingNode, UIScrollVi
                         break
                     }
                     
-                    let contentContainerOffset = CGPoint(x: localSourceFrame.center.x - self.contentContainerNode.frame.center.x, y: localSourceFrame.center.y - self.contentContainerNode.frame.center.y)
-                    if let contentNode = self.contentContainerNode.contentNode, case let .controller(controller) = contentNode {
-                        let snapshotView: UIView? = nil// controller.sourceNode.view.snapshotContentTree()
-                        if let snapshotView = snapshotView {
-                            controller.sourceView.isHidden = true
+                    let localSourceFrame = self.view.convert(CGRect(origin: CGPoint(x: originalProjectedContentViewFrame.1.minX, y: originalProjectedContentViewFrame.1.minY), size: CGSize(width: originalProjectedContentViewFrame.1.width, height: originalProjectedContentViewFrame.1.height)), to: self.scrollNode.view)
+                    let transition = ContainedViewLayoutTransition.animated(duration: springDuration, curve: .customSpring(damping: springDamping, initialVelocity: 0.0))
+                    
+                    let leftAvatarSnapshotView = leftAvatarView?.snapshotContentTree(unhide: true)
+                    let contentSnapshotView = contentView?.snapshotContentTree(unhide: true)
+                    let snapshotViewFrame = controller.sourceView.frame
+                    
+                    let titleSize: CGSize?
+                    let titleViewSnapshotView: UIView?
+                    let rightAvatarSnapshotView: UIView?
+                    let navigationBarHeight: CGFloat?
+                    if let chatListController = controller.controller as? ChatListController,
+                       let customNavigationInfo = chatListController.customNavigationInfo  {
+                        titleSize = customNavigationInfo.0
+                        titleViewSnapshotView = customNavigationInfo.1
+                        rightAvatarSnapshotView = nil
+                        navigationBarHeight = customNavigationInfo.2
+                    } else {
+                        titleSize = controller.controller.navigationBar?.titleSize()
+                        titleViewSnapshotView = controller.controller.navigationBar?.makeTransitionTitleNode(foregroundColor: UIColor(rgb: 0xffffff))?.view
+                        rightAvatarSnapshotView = controller.controller.navigationBar?.rightButtonNode.view.snapshotContentTree()
+                        navigationBarHeight = controller.controller.navigationBar?.frame.height
+                    }
+                    
+                    if let navigationBarHeight = navigationBarHeight {
+                        let backgroundView = UIView(frame: localSourceFrame)
+                        backgroundView.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+                        backgroundView.clipsToBounds = true
+                        backgroundView.layer.cornerRadius = 0
+                        
+                        let backgroundSolidColorView = UIView()
+                        if case let .controller(controller) = self.source {
+                            backgroundSolidColorView.backgroundColor = controller.sourceBackgroundColor
+                        } else {
+                            backgroundSolidColorView.backgroundColor = presentationData.theme.chatList.itemBackgroundColor
+                        }
+                        backgroundSolidColorView.frame = backgroundView.bounds
+                        backgroundSolidColorView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                        backgroundView.addSubview(backgroundSolidColorView)
+                        
+                        let blurEffect: UIBlurEffect
+                        if presentationData.theme.rootController.keyboardColor == .dark {
+                            blurEffect = UIBlurEffect(style: .dark)
+                        } else {
+                            blurEffect = UIBlurEffect(style: .light)
+                        }
+                        let backgroundBlurView = UIVisualEffectView(effect: blurEffect)
+                        backgroundBlurView.frame = backgroundView.bounds
+                        backgroundBlurView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                        backgroundView.addSubview(backgroundBlurView)
+                        
+                        self.view.insertSubview(backgroundView, aboveSubview: self.contentContainerNode.view)
+                        
+                        transition.updateFrame(layer: backgroundView.layer, frame: CGRect(origin: originalProjectedContentViewFrame.0.origin, size: CGSize(width: originalProjectedContentViewFrame.0.width, height: navigationBarHeight)))
+                        transition.updateCornerRadius(layer: backgroundView.layer, cornerRadius: 14.0)
+                        backgroundSolidColorView.layer.animateAlpha(from: 1.0, to: 0.5, duration: springDuration * 0.6, removeOnCompletion: false)
+                        backgroundView.layer.animateAlpha(from: 1.0, to: 0.0, duration: springDuration * 0.2, delay: springDuration * 0.6, removeOnCompletion: false, completion: { [weak backgroundView] _ in
+                            backgroundView?.removeFromSuperview()
+                        })
+                    }
+                    
+                    if let titleSize = titleSize {
+                        let chatFontSize: CGFloat = 16.0
+                        let navigationFontSize: CGFloat = 17.0
+                        let scaleDownSide = chatFontSize / navigationFontSize
+                        let scaleUpSide = navigationFontSize / chatFontSize
+                        let scaleSide = snapshotViewFrame.width
+                        let currentScale: CGFloat = min(1.3, (scaleSide + 15.0) / scaleSide)
+                        
+                        let titleScale = scaleDownSide * currentScale
+                        let titleLeftOffset = localSourceFrame.width * (currentScale - 1.0) / 2.0
+                        let titleTopOffset = localSourceFrame.height * (currentScale - 1.0) / 2.0
+                        
+                        if let leftAvatarSnapshotView = leftAvatarSnapshotView,
+                           let contentSnapshotView = contentSnapshotView {
+                            let snapshotViewContainer = UIView(frame: snapshotViewFrame)
+                            snapshotViewContainer.addSubview(leftAvatarSnapshotView)
+                            snapshotViewContainer.addSubview(contentSnapshotView)
                             
-                            self.view.insertSubview(snapshotView, belowSubview: self.contentContainerNode.view)
-                            snapshotView.layer.animateSpring(from: NSValue(cgPoint: localSourceFrame.center), to: NSValue(cgPoint: CGPoint(x: self.contentContainerNode.frame.midX, y: self.contentContainerNode.frame.minY + localSourceFrame.height / 2.0)), keyPath: "position", duration: springDuration, initialVelocity: 0.0, damping: springDamping, removeOnCompletion: false)
-                            //snapshotView.layer.animateSpring(from: 1.0 as NSNumber, to: (self.contentContainerNode.frame.width / localSourceFrame.width) as NSNumber, keyPath: "transform.scale", duration: springDuration, initialVelocity: 0.0, damping: springDamping, removeOnCompletion: false)
-                            snapshotView.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.2 * animationDurationFactor, removeOnCompletion: false, completion: { [weak snapshotView] _ in
-                                snapshotView?.removeFromSuperview()
+                            self.view.insertSubview(snapshotViewContainer, aboveSubview: self.contentContainerNode.view)
+                            
+                            transition.animatePosition(layer: leftAvatarSnapshotView.layer, from: leftAvatarSnapshotView.center, to: leftAvatarSnapshotView.center.offsetBy(dx: -leftAvatarSnapshotView.frame.width / 2.0, dy: 0.0))
+                            transition.animateTransformScale(layer: leftAvatarSnapshotView.layer, from: CGPoint(x: 1.0, y: 1.0), to: CGPoint(x: 0.1, y: 0.1))
+
+                            let snapshotViewFrom = localSourceFrame.center
+                            let snapshotViewTo = CGPoint(x: originalProjectedContentViewFrame.0.midX + (snapshotViewContainer.frame.width / 2.0 - 80.0) * scaleUpSide - titleSize.width / 2.0, y: originalProjectedContentViewFrame.0.minY + (snapshotViewContainer.frame.height / 2.0 - 8.33) * scaleUpSide + 4.0)
+                            transition.animatePosition(layer: snapshotViewContainer.layer, from: snapshotViewFrom, to: snapshotViewTo, removeOnCompletion: false)
+                            transition.animateTransformScale(layer: snapshotViewContainer.layer, from: CGPoint(x: currentScale, y: currentScale), to: CGPoint(x: scaleUpSide, y: scaleUpSide))
+                            snapshotViewContainer.layer.animateAlpha(from: 1.0, to: 0.0, duration: springDuration * 0.3, removeOnCompletion: false, completion: { [weak snapshotViewContainer] _ in
+                                snapshotViewContainer?.removeFromSuperview()
+                            })
+                        }
+                        
+                        if let titleViewSnapshotView = titleViewSnapshotView {
+                            self.view.insertSubview(titleViewSnapshotView, aboveSubview: self.contentContainerNode.view)
+                            let titleViewSnapshotFrom = CGPoint(x: 80.0 * currentScale + titleSize.width / 2.0 * titleScale - titleLeftOffset, y: localSourceFrame.minY + (titleViewSnapshotView.frame.height / 2.0 - 4 + titleViewSnapshotView.frame.minY) * titleScale + 8.33 * currentScale - titleTopOffset)
+                            let titleViewSnapshotTo = CGPoint(x: originalProjectedContentViewFrame.0.midX, y: originalProjectedContentViewFrame.0.minY + titleViewSnapshotView.frame.height / 2.0 + titleViewSnapshotView.frame.minY)
+                            transition.animatePosition(layer: titleViewSnapshotView.layer, from: titleViewSnapshotFrom, to: titleViewSnapshotTo, removeOnCompletion: false)
+                            transition.animateTransformScale(layer: titleViewSnapshotView.layer, from: CGPoint(x: titleScale, y: titleScale), to: CGPoint(x: 1.0, y: 1.0))
+                            titleViewSnapshotView.layer.animateAlpha(from: 0.0, to: 1.0, duration: springDuration * 0.3, removeOnCompletion: false, completion: { _ in
+                                titleViewSnapshotView.layer.animateAlpha(from: 1.0, to: 0.0, duration: springDuration * 0.1, delay: springDuration * 0.6, removeOnCompletion: false, completion: { _ in
+                                    titleViewSnapshotView.removeFromSuperview()
+                                })
                             })
                         }
                     }
-                    self.actionsContainerNode.layer.animateSpring(from: NSValue(cgPoint: CGPoint(x: localSourceFrame.center.x - self.actionsContainerNode.position.x, y: localSourceFrame.center.y - self.actionsContainerNode.position.y)), to: NSValue(cgPoint: CGPoint()), keyPath: "position", duration: springDuration, initialVelocity: 0.0, damping: springDamping, additive: true)
-                    self.contentContainerNode.layer.animateSpring(from: NSValue(cgPoint: contentContainerOffset), to: NSValue(cgPoint: CGPoint()), keyPath: "position", duration: springDuration, initialVelocity: 0.0, damping: springDamping, additive: true, completion: { [weak self] _ in
+                    
+                    if let rightAvatarSnapshotView = rightAvatarSnapshotView {
+                        self.view.insertSubview(rightAvatarSnapshotView, aboveSubview: self.contentContainerNode.view)
+
+                        transition.animateTransformScale(layer: rightAvatarSnapshotView.layer, from: CGPoint(x: 0.1, y: 0.1), to: CGPoint(x: 1.0, y: 1.0))
+                        transition.animatePosition(layer: rightAvatarSnapshotView.layer, from: CGPoint(x: originalProjectedContentViewFrame.0.maxX - rightAvatarSnapshotView.frame.width / 2.0 - 16.0, y: localSourceFrame.midY), to: CGPoint(x: originalProjectedContentViewFrame.0.maxX - rightAvatarSnapshotView.frame.width / 2.0 - 16.0, y: originalProjectedContentViewFrame.0.minY + rightAvatarSnapshotView.frame.width / 2.0 + 3.0), removeOnCompletion: false)
+                        rightAvatarSnapshotView.layer.animateAlpha(from: 0.0, to: 1.0, duration: springDuration * 0.7, removeOnCompletion: false, completion: { _ in
+                            DispatchQueue.main.asyncAfter(deadline: DispatchTime.now() + springDuration * 0.3, execute: { [weak rightAvatarSnapshotView] in
+                                rightAvatarSnapshotView?.removeFromSuperview()
+                            })
+                        })
+                    }
+                    
+                    controller.sourceView.isHidden = true
+                    self.contentShadowContainerNode.alpha = 1.0
+                    self.contentContainerNode.allowsGroupOpacity = true
+                    
+                    let contentContainerFrame = originalProjectedContentViewFrame.0
+                    transition.updateFrame(node: self.contentShadowContainerNode, frame: contentContainerFrame)
+                    transition.updateFrame(node: self.contentContainerNode, frame: contentContainerFrame)
+                    
+                    transition.updateCornerRadius(node: self.contentShadowContainerNode, cornerRadius: 14.0)
+                    transition.updateCornerRadius(node: self.contentContainerNode, cornerRadius: 14.0)
+                    
+                    let size = CGSize(width: contentContainerFrame.width, height: contentContainerFrame.height + 5.0)
+                    self.contentContainerNode.updateLayout(size: size, scaledSize: size, transition: transition)
+                    
+                    let contentContainerPositionFrom = CGPoint(x: 0, y: localSourceFrame.center.y - self.contentContainerNode.position.y)
+                    self.contentShadowContainerNode.layer.animateSpring(from: NSValue(cgPoint: contentContainerPositionFrom), to: NSValue(cgPoint: CGPoint()), keyPath: "position", duration: springDuration, initialVelocity: 0.0, damping: springDamping, additive: true)
+                    self.contentContainerNode.layer.animateSpring(from: NSValue(cgPoint: contentContainerPositionFrom), to: NSValue(cgPoint: CGPoint()), keyPath: "position", duration: springDuration, initialVelocity: 0.0, damping: springDamping, additive: true, completion: { [weak self] _ in
                         self?.animatedIn = true
                     })
+                    self.contentContainerNode.layer.animateAlpha(from: 0.5, to: 1.0, duration: 0.2 * animationDurationFactor, removeOnCompletion: false, completion: { [weak self] _ in
+                        self?.contentContainerNode.allowsGroupOpacity = false
+                    })
+                    
+                    self.actionsContainerNode.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.2 * animationDurationFactor, removeOnCompletion: false)
+                    self.actionsContainerNode.layer.animateSpring(from: 0.1 as NSNumber, to: 1.0 as NSNumber, keyPath: "transform.scale", duration: springDuration, initialVelocity: 0.0, damping: springDamping)
+                    self.actionsContainerNode.layer.animateSpring(from: NSValue(cgPoint: CGPoint(x: originalProjectedContentViewFrame.0.minX * 2.0 - self.actionsContainerNode.position.x, y: localSourceFrame.maxY - self.actionsContainerNode.position.y)), to: NSValue(cgPoint: CGPoint()), keyPath: "position", duration: springDuration, initialVelocity: 0.0, damping: springDamping, additive: true)
                 }
             }
         }
@@ -1369,52 +1543,77 @@ private final class ContextControllerNode: ViewControllerTracingNode, UIScrollVi
                 }
             }
             
-            if #available(iOS 10.0, *) {
-                if let propertyAnimator = self.propertyAnimator {
-                    let propertyAnimator = propertyAnimator as? UIViewPropertyAnimator
-                    propertyAnimator?.stopAnimation(true)
-                }
-                self.propertyAnimator = UIViewPropertyAnimator(duration: transitionDuration * UIView.animationDurationFactor(), curve: .easeInOut, animations: { [weak self] in
-                    self?.effectView.effect = nil
-                })
-            }
-            
-            if let _ = self.propertyAnimator {
+            if blurLayerBackground {
                 if #available(iOSApplicationExtension 10.0, iOS 10.0, *) {
-                    self.displayLinkAnimator = DisplayLinkAnimator(duration: 0.2 * animationDurationFactor * UIView.animationDurationFactor(), from: 0.0, to: 0.999, update: { [weak self] value in
-                        (self?.propertyAnimator as? UIViewPropertyAnimator)?.fractionComplete = value
-                    }, completion: {
+                    if case let .controller(controller) = self.source,
+                       let rootView = controller.navigationController?.rootView {
+                        rootView.layer.animateScale(from: 0.9, to: 1.0, duration: 0.9 * transitionDuration * animationDurationFactor, removeOnCompletion: false)
+                    }
+                    self.customBlurView.updateBlurRadius(20.0)
+                    self.displayLinkAnimator = DisplayLinkAnimator(duration: 0.9 * transitionDuration * animationDurationFactor * UIView.animationDurationFactor(), from: 1.0, to: 0.0, update: { [weak customBlurView] value in
+                        customBlurView?.updateBlurRadius(20.0 * value)
+                    }, completion: { [weak customBlurView] in
+                        customBlurView?.removeFromSuperview()
                         completedEffect = true
                         intermediateCompletion()
                     })
                 }
-                self.effectView.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.05 * animationDurationFactor, delay: 0.15, timingFunction: CAMediaTimingFunctionName.easeInEaseOut.rawValue, removeOnCompletion: false)
+                
+                if !self.dimNode.isHidden {
+                    self.dimNode.layer.animateAlpha(from: 0.5, to: 0.0, duration: 0.9 * transitionDuration * animationDurationFactor, removeOnCompletion: false)
+                }
             } else {
-                UIView.animate(withDuration: 0.21 * animationDurationFactor, animations: {
-                    if #available(iOS 9.0, *) {
-                        self.effectView.effect = nil
-                    } else {
-                        self.effectView.alpha = 0.0
+                if #available(iOS 10.0, *) {
+                    if let propertyAnimator = self.propertyAnimator {
+                        let propertyAnimator = propertyAnimator as? UIViewPropertyAnimator
+                        propertyAnimator?.stopAnimation(true)
                     }
-                }, completion: { _ in
-                    completedEffect = true
-                    intermediateCompletion()
-                })
+                    self.propertyAnimator = UIViewPropertyAnimator(duration: transitionDuration * UIView.animationDurationFactor(), curve: .easeInOut, animations: { [weak self] in
+                        self?.effectView.effect = nil
+                    })
+                }
+                
+                if let _ = self.propertyAnimator {
+                    if #available(iOSApplicationExtension 10.0, iOS 10.0, *) {
+                        self.displayLinkAnimator = DisplayLinkAnimator(duration: 0.2 * animationDurationFactor * UIView.animationDurationFactor(), from: 0.0, to: 0.999, update: { [weak self] value in
+                            (self?.propertyAnimator as? UIViewPropertyAnimator)?.fractionComplete = value
+                        }, completion: {
+                            completedEffect = true
+                            intermediateCompletion()
+                        })
+                    }
+                    self.effectView.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.05 * animationDurationFactor, delay: 0.15, timingFunction: CAMediaTimingFunctionName.easeInEaseOut.rawValue, removeOnCompletion: false)
+                } else {
+                    UIView.animate(withDuration: 0.21 * animationDurationFactor, animations: {
+                        if #available(iOS 9.0, *) {
+                            self.effectView.effect = nil
+                        } else {
+                            self.effectView.alpha = 0.0
+                        }
+                    }, completion: { _ in
+                        completedEffect = true
+                        intermediateCompletion()
+                    })
+                }
+                
+                if !self.dimNode.isHidden {
+                    self.dimNode.layer.animateAlpha(from: 1.0, to: 0.0, duration: transitionDuration * animationDurationFactor, removeOnCompletion: false)
+                } else {
+                    self.withoutBlurDimNode.layer.animateAlpha(from: 1.0, to: 0.0, duration: transitionDuration * animationDurationFactor, removeOnCompletion: false)
+                }
             }
-            
-            if !self.dimNode.isHidden {
-                self.dimNode.layer.animateAlpha(from: 1.0, to: 0.0, duration: transitionDuration * animationDurationFactor, removeOnCompletion: false)
-            } else {
-                self.withoutBlurDimNode.layer.animateAlpha(from: 1.0, to: 0.0, duration: transitionDuration * animationDurationFactor, removeOnCompletion: false)
-            }
-            self.actionsContainerNode.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.2 * animationDurationFactor, removeOnCompletion: false, completion: { _ in
+
+            self.actionsContainerNode.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.1 * animationDurationFactor, removeOnCompletion: false, completion: { _ in
                 completedActionsNode = true
                 intermediateCompletion()
             })
+            
+            self.contentShadowContainerNode.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.2 * animationDurationFactor, removeOnCompletion: false, completion: { _ in
+            })
             self.contentContainerNode.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.2 * animationDurationFactor, removeOnCompletion: false, completion: { _ in
             })
+            
             self.actionsContainerNode.layer.animateScale(from: 1.0, to: 0.1, duration: transitionDuration * animationDurationFactor, timingFunction: transitionCurve.timingFunction, removeOnCompletion: false)
-            self.contentContainerNode.layer.animateScale(from: 1.0, to: 0.01, duration: transitionDuration * animationDurationFactor, timingFunction: transitionCurve.timingFunction, removeOnCompletion: false)
             
             let animateOutToItem: Bool
             switch result {
@@ -1424,12 +1623,133 @@ private final class ContextControllerNode: ViewControllerTracingNode, UIScrollVi
                 animateOutToItem = false
             }
             
-            if animateOutToItem, let originalProjectedContentViewFrame = self.originalProjectedContentViewFrame {
-                let localSourceFrame = self.view.convert(CGRect(origin: CGPoint(x: originalProjectedContentViewFrame.1.minX, y: originalProjectedContentViewFrame.1.minY), size: CGSize(width: originalProjectedContentViewFrame.1.width, height: originalProjectedContentViewFrame.1.height)), to: self.scrollNode.view)
+            if animateOutToItem, let originalProjectedContentViewFrame = self.originalProjectedContentViewFrame,
+               let (leftAvatarView, contentView) = (controller.sourceView.asyncdisplaykit_node as? ContextControllerSourceNode)?.customContextTransitionInfo?() {
+                let duration = transitionDuration * animationDurationFactor
+                let transition = ContainedViewLayoutTransition.animated(duration: duration, curve: transitionCurve)
                 
-                self.actionsContainerNode.layer.animatePosition(from: CGPoint(), to: CGPoint(x: localSourceFrame.center.x - self.actionsContainerNode.position.x, y: localSourceFrame.center.y - self.actionsContainerNode.position.y), duration: transitionDuration * animationDurationFactor, timingFunction: transitionCurve.timingFunction, removeOnCompletion: false, additive: true)
-                let contentContainerOffset = CGPoint(x: localSourceFrame.center.x - self.contentContainerNode.frame.center.x, y: localSourceFrame.center.y - self.contentContainerNode.frame.center.y)
-                self.contentContainerNode.layer.animatePosition(from: CGPoint(), to: contentContainerOffset, duration: transitionDuration * animationDurationFactor, timingFunction: transitionCurve.timingFunction, removeOnCompletion: false, additive: true, completion: { [weak self] _ in
+                let leftAvatarSnapshotView = leftAvatarView?.snapshotContentTree(unhide: true)
+                let contentSnapshotView = contentView?.snapshotContentTree(unhide: true)
+                let snapshotViewFrame = controller.sourceView.frame
+                
+                let titleSize: CGSize?
+                let titleViewSnapshotView: UIView?
+                let rightAvatarSnapshotView: UIView?
+                let navigationBarHeight: CGFloat?
+                if let chatListController = controller.controller as? ChatListController,
+                   let customNavigationInfo = chatListController.customNavigationInfo  {
+                    titleSize = customNavigationInfo.0
+                    titleViewSnapshotView = customNavigationInfo.1
+                    rightAvatarSnapshotView = nil
+                    navigationBarHeight = customNavigationInfo.2
+                } else {
+                    titleSize = controller.controller.navigationBar?.titleSize()
+                    titleViewSnapshotView = controller.controller.navigationBar?.makeTransitionTitleNode(foregroundColor: UIColor(rgb: 0xffffff))?.view
+                    rightAvatarSnapshotView = controller.controller.navigationBar?.rightButtonNode.view.snapshotContentTree()
+                    navigationBarHeight = controller.controller.navigationBar?.frame.height
+                }
+                
+                if let navigationBarHeight = navigationBarHeight {
+                    let backgroundView = UIView(frame: CGRect(origin: self.contentContainerNode.frame.origin, size: CGSize(width: self.contentContainerNode.frame.width, height: navigationBarHeight)))
+                    backgroundView.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+                    backgroundView.clipsToBounds = true
+                    backgroundView.layer.cornerRadius = 14.0
+                    
+                    let backgroundSolidColorView = UIView()
+                    if case let .controller(controller) = self.source {
+                        backgroundSolidColorView.backgroundColor = controller.sourceBackgroundColor
+                    } else {
+                        backgroundSolidColorView.backgroundColor = presentationData.theme.chatList.itemBackgroundColor
+                    }
+                    backgroundSolidColorView.frame = CGRect(origin: CGPoint(), size: originalProjectedContentViewFrame.0.size)
+                    backgroundSolidColorView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                    backgroundSolidColorView.layer.opacity = 0.0
+                    backgroundView.addSubview(backgroundSolidColorView)
+                    
+                    let blurEffect: UIBlurEffect
+                    if presentationData.theme.rootController.keyboardColor == .dark {
+                        blurEffect = UIBlurEffect(style: .dark)
+                    } else {
+                        blurEffect = UIBlurEffect(style: .light)
+                    }
+                    let backgroundBlurView = UIVisualEffectView(effect: blurEffect)
+                    backgroundBlurView.frame = CGRect(origin: CGPoint(), size: originalProjectedContentViewFrame.0.size)
+                    backgroundBlurView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                    backgroundView.addSubview(backgroundBlurView)
+                    
+                    self.view.insertSubview(backgroundView, aboveSubview: self.contentContainerNode.view)
+                    
+                    transition.updateFrame(layer: backgroundView.layer, frame: originalProjectedContentViewFrame.0)
+                    transition.updateCornerRadius(layer: backgroundView.layer, cornerRadius: 0.0)
+                    backgroundSolidColorView.layer.animateAlpha(from: 0.0, to: 1.0, duration: duration * 0.1, removeOnCompletion: false)
+                    backgroundView.layer.animateAlpha(from: 0.0, to: 1.0, duration: duration * 0.2, removeOnCompletion: false, completion: { _ in
+                        backgroundView.layer.animateAlpha(from: 1.0, to: 1.0, duration: duration * 0.8, removeOnCompletion: false, completion: { [weak backgroundView] _ in
+                            backgroundView?.removeFromSuperview()
+                        })
+                    })
+                }
+                
+                if let titleSize = titleSize {
+                    let chatFontSize: CGFloat = 16.0
+                    let navigationFontSize: CGFloat = 17.0
+                    let scaleDownSide = chatFontSize / navigationFontSize
+                    let scaleUpSide = navigationFontSize / chatFontSize
+                    
+                    if let leftAvatarSnapshotView = leftAvatarSnapshotView,
+                       let contentSnapshotView = contentSnapshotView {
+                        let snapshotViewContainer = UIView(frame: snapshotViewFrame)
+                        snapshotViewContainer.addSubview(leftAvatarSnapshotView)
+                        snapshotViewContainer.addSubview(contentSnapshotView)
+                        
+                        self.view.insertSubview(snapshotViewContainer, aboveSubview: self.contentContainerNode.view)
+                        
+                        transition.animatePosition(layer: leftAvatarSnapshotView.layer, from: leftAvatarSnapshotView.center.offsetBy(dx: -leftAvatarSnapshotView.frame.width / 2.0, dy: 0.0), to: leftAvatarSnapshotView.center)
+                        transition.animateTransformScale(layer: leftAvatarSnapshotView.layer, from: CGPoint(x: 0.1, y: 0.1), to: CGPoint(x: 1.0, y: 1.0))
+                        
+                        let snapshotViewFrom = CGPoint(
+                            x: originalProjectedContentViewFrame.0.midX + (snapshotViewContainer.frame.width / 2.0 - 80.0) * scaleUpSide - titleSize.width / 2.0,
+                            y: self.contentContainerNode.frame.minY + (snapshotViewContainer.frame.height / 2.0 - 8.33) * scaleUpSide + 4.0
+                        )
+                        let snapshotViewTo = originalProjectedContentViewFrame.0.center
+                        transition.animatePosition(layer: snapshotViewContainer.layer, from: snapshotViewFrom, to: snapshotViewTo, removeOnCompletion: false)
+                        transition.animateTransformScale(layer: snapshotViewContainer.layer, from: CGPoint(x: scaleUpSide, y: scaleUpSide), to: CGPoint(x: 1.0, y: 1.0))
+                        snapshotViewContainer.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.9 * duration, removeOnCompletion: false, completion: { _ in
+                            snapshotViewContainer.layer.animateAlpha(from: 1.0, to: 1.0, duration: 0.1 * duration, removeOnCompletion: false, completion: { [weak snapshotViewContainer] _ in
+                                snapshotViewContainer?.removeFromSuperview()
+                            })
+                        })
+                    }
+                    
+                    if let titleViewSnapshotView = titleViewSnapshotView {
+                        self.view.insertSubview(titleViewSnapshotView, aboveSubview: self.contentContainerNode.view)
+                        let titleViewSnapshotFrom = CGPoint(x: self.contentContainerNode.frame.midX, y: self.contentContainerNode.frame.minY + titleViewSnapshotView.frame.height / 2.0 + titleViewSnapshotView.frame.minY)
+                        let titleViewSnapshotTo = CGPoint(x: 80.0 + titleSize.width / 2.0 * scaleDownSide, y: originalProjectedContentViewFrame.0.minY + (titleViewSnapshotView.frame.height / 2.0 - 4 + titleViewSnapshotView.frame.minY) * scaleDownSide + 8.33)
+                        transition.animatePosition(layer: titleViewSnapshotView.layer, from: titleViewSnapshotFrom, to: titleViewSnapshotTo, removeOnCompletion: false)
+                        transition.animateTransformScale(layer: titleViewSnapshotView.layer, from: CGPoint(x: 1.0, y: 1.0), to: CGPoint(x: scaleDownSide, y: scaleDownSide))
+                        titleViewSnapshotView.layer.animateAlpha(from: 1.0, to: 0.0, duration: duration * 0.6, removeOnCompletion: false, completion: { [weak titleViewSnapshotView] _ in
+                            titleViewSnapshotView?.removeFromSuperview()
+                        })
+                    }
+                }
+                
+                if let rightAvatarSnapshotView = rightAvatarSnapshotView  {
+                    self.view.insertSubview(rightAvatarSnapshotView, aboveSubview: self.contentContainerNode.view)
+                    let avatarSnapshotFrom = CGPoint(x: self.contentContainerNode.frame.maxX - rightAvatarSnapshotView.frame.width / 2.0 - 16.0, y: self.contentContainerNode.frame.minY + rightAvatarSnapshotView.frame.height / 2.0 + 3.0)
+                    let avatarSnapshotTo = CGPoint(x: self.contentContainerNode.frame.midX + self.contentContainerNode.frame.width / 4.0, y: originalProjectedContentViewFrame.0.midY)
+                    transition.animateTransformScale(layer: rightAvatarSnapshotView.layer, from: CGPoint(x: 1.0, y: 1.0), to: CGPoint(x: 0.1, y: 0.1))
+                    transition.animatePosition(layer: rightAvatarSnapshotView.layer, from: avatarSnapshotFrom, to: avatarSnapshotTo, removeOnCompletion: false)
+                    rightAvatarSnapshotView.layer.animateAlpha(from: 1.0, to: 0.0, duration: duration * 0.8, removeOnCompletion: false, completion: { [weak rightAvatarSnapshotView] _ in
+                        rightAvatarSnapshotView?.removeFromSuperview()
+                    })
+                }
+                
+                transition.updatePosition(node: self.actionsContainerNode, position: CGPoint(x: originalProjectedContentViewFrame.0.minX + self.actionsContainerNode.frame.minX * 2.0, y: originalProjectedContentViewFrame.0.maxY))
+                
+                transition.updateCornerRadius(node: self.contentShadowContainerNode, cornerRadius: 0.0)
+                transition.updateCornerRadius(node: self.contentContainerNode, cornerRadius: 0.0)
+                self.contentContainerNode.updateLayout(size: controller.frame.size, scaledSize: CGSize(width: originalProjectedContentViewFrame.0.width, height: controller.frame.height), transition: transition)
+                transition.updateFrame(node: self.contentShadowContainerNode, frame: originalProjectedContentViewFrame.0)
+                transition.updateFrame(node: self.contentContainerNode, frame: originalProjectedContentViewFrame.0, completion: { [weak self] _ in
                     completedContentNode = true
                     if let strongSelf = self, let contentNode = strongSelf.contentContainerNode.contentNode, case let .controller(controller) = contentNode {
                         controller.sourceView.isHidden = false
@@ -1525,6 +1845,7 @@ private final class ContextControllerNode: ViewControllerTracingNode, UIScrollVi
         }, feedbackTap: { [weak self] in
             self?.hapticFeedback.tap()
         }, blurBackground: self.blurBackground)
+        self.actionsContainerNode.alpha = previousActionsContainerNode.alpha
         self.scrollNode.insertSubnode(self.actionsContainerNode, aboveSubnode: previousActionsContainerNode)
         
         if let layout = self.validLayout {
@@ -1606,7 +1927,7 @@ private final class ContextControllerNode: ViewControllerTracingNode, UIScrollVi
         case .compact:
             if case .reference = self.source {
             } else if case let .extracted(extractedSource) = self.source, !extractedSource.blurBackground {
-            } else if self.effectView.superview == nil {
+            } else if !self.blurLayerBackground, self.effectView.superview == nil {
                 self.view.insertSubview(self.effectView, at: 0)
                 if #available(iOS 10.0, *) {
                     if let propertyAnimator = self.propertyAnimator {
@@ -1938,9 +2259,9 @@ private final class ContextControllerNode: ViewControllerTracingNode, UIScrollVi
                             contentUnscaledSize = preferredSize
                         }
                     }
+//                    let contentSize = CGSize(width: floor(contentUnscaledSize.width * contentScale), height: floor(originalProjectedContentViewFrame.1.height))
                     let contentSize = CGSize(width: floor(contentUnscaledSize.width * contentScale), height: floor(contentUnscaledSize.height * contentScale))
                     
-                    self.contentContainerNode.updateLayout(size: contentUnscaledSize, scaledSize: contentSize, transition: transition)
                     
                     let maximumActionsFrameOrigin = max(60.0, layout.size.height - layout.intrinsicInsets.bottom - actionsBottomInset - actionsSize.height)
                     var originalActionsFrame: CGRect
@@ -1998,8 +2319,17 @@ private final class ContextControllerNode: ViewControllerTracingNode, UIScrollVi
                     
                     let overflowOffset = min(0.0, originalContentFrame.minY - contentTopInset)
                     
-                    let contentContainerFrame = originalContentFrame
-                    transition.updateFrame(node: self.contentContainerNode, frame: contentContainerFrame.offsetBy(dx: 0.0, dy: -overflowOffset))
+                    // originalContentFrame = (12, 72), (369, 487))
+                    self.originalProjectedContentViewFrame = (CGRect(origin: originalContentFrame.origin, size: contentSize), projectedFrame)
+
+                    let contentContainerFrame = CGRect(origin: CGPoint(), size: CGSize(width: projectedFrame.width, height: projectedFrame.height)).offsetBy(dx: 0.0, dy: -overflowOffset)
+                    transition.updateFrame(node: self.contentShadowContainerNode, frame: contentContainerFrame)
+                    transition.updateFrame(node: self.contentContainerNode, frame: contentContainerFrame)
+                    
+                    let size = CGSize(width: contentSize.width, height: contentSize.height + 5.0)
+                    let scaledSize = CGSize(width: projectedFrame.width, height: (contentSize.height + 5.0) * (projectedFrame.width / contentSize.width))
+                    self.contentContainerNode.updateLayout(size: size, scaledSize: scaledSize, transition: transition)
+
                     actionsContainerTransition.updateFrame(node: self.actionsContainerNode, frame: originalActionsFrame.offsetBy(dx: 0.0, dy: -overflowOffset))
                     
                     if isInitialLayout {
@@ -2322,10 +2652,12 @@ public extension ContextExtractedContentSource {
 public final class ContextControllerTakeControllerInfo {
     public let contentAreaInScreenSpace: CGRect
     public let sourceNode: () -> (UIView, CGRect)?
+    public let rawSourceNode: (() -> (ASDisplayNode?))?
     
-    public init(contentAreaInScreenSpace: CGRect, sourceNode: @escaping () -> (UIView, CGRect)?) {
+    public init(contentAreaInScreenSpace: CGRect, sourceNode: @escaping () -> (UIView, CGRect)?, rawSourceNode: (() -> (ASDisplayNode?))? = nil) {
         self.contentAreaInScreenSpace = contentAreaInScreenSpace
         self.sourceNode = sourceNode
+        self.rawSourceNode = rawSourceNode
     }
 }
 
@@ -2333,6 +2665,7 @@ public protocol ContextControllerContentSource: AnyObject {
     var controller: ViewController { get }
     var navigationController: NavigationController? { get }
     var passthroughTouches: Bool { get }
+    var sourceBackgroundColor: UIColor? { get }
     
     func transitionInfo() -> ContextControllerTakeControllerInfo?
     
@@ -2799,5 +3132,67 @@ public final class ContextController: ViewController, StandalonePresentableContr
                 }
             )
         ]
+    }
+}
+
+public class CustomBlurView: UIVisualEffectView {
+    
+    public func updateBlurRadius(_ blurRadius: CGFloat) {
+        self.maxBlurRadius = blurRadius
+        updateBlurLayer()
+    }
+    
+    private let gradientMask: UIImage?
+    private var maxBlurRadius: CGFloat
+    
+    public init(
+        gradientMask: UIImage?,
+        maxBlurRadius: CGFloat = 20
+    ) {
+        self.gradientMask = gradientMask
+        self.maxBlurRadius = maxBlurRadius
+        
+        super.init(effect: UIBlurEffect(style: .regular))
+        
+        if subviews.indices.contains(1) {
+            let tintOverlayView = subviews[1]
+            tintOverlayView.alpha = 0
+        }
+        
+        updateBlurLayer()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    private func updateBlurLayer() {
+        guard let blurLayer = CALayer.blur() else {
+            return
+        }
+        
+        blurLayer.setValue(self.maxBlurRadius, forKey: "inputRadius")
+        if let gradientImageRef = self.gradientMask?.cgImage {
+            blurLayer.setValue(gradientImageRef, forKey: "inputMaskImage")
+        }
+        blurLayer.setValue(true, forKey: "inputNormalizeEdges")
+        subviews.first?.layer.setValue(2, forKey: "scale")
+        
+        self.subviews.first?.layer.filters = [blurLayer]
+    }
+}
+
+public extension UIImage {
+    convenience init?(color: UIColor, size: CGSize = CGSize(width: 1, height: 1)) {
+        let rect = CGRect(origin: .zero, size: size)
+        UIGraphicsBeginImageContextWithOptions(rect.size, false, 0.0)
+        color.setFill()
+        UIRectFill(rect)
+        let image = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        
+        guard let cgImage = image?.cgImage else { return nil }
+        self.init(cgImage: cgImage)
     }
 }

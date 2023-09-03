@@ -96,7 +96,7 @@ private enum ChatTitleCredibilityIcon: Equatable {
     case emojiStatus(PeerEmojiStatus)
 }
 
-public final class ChatTitleView: UIView, NavigationBarTitleView {
+public final class ChatTitleView: UIView, NavigationBarTitleView, NavigationBarTitleTransitionNode {
     private let context: AccountContext
     
     private var theme: PresentationTheme
@@ -854,6 +854,18 @@ public final class ChatTitleView: UIView, NavigationBarTitleView {
         self.pointerInteraction = PointerInteraction(view: self, style: .rectangle(CGSize(width: titleFrame.width + 16.0, height: 40.0)))
         
         return titleFrame
+    }
+    
+    public func makeTransitionMirrorNode() -> ASDisplayNode {
+        let snapshotView = self.snapshotView(afterScreenUpdates: true)
+        
+        return ASDisplayNode(viewBlock: {
+            return snapshotView ?? UIView()
+        }, didLoad: nil)
+    }
+    
+    public func titleSize() -> CGSize? {
+        return self.titleTextNode.frame.size
     }
     
     @objc private func buttonPressed() {

@@ -194,6 +194,19 @@ open class NavigationController: UINavigationController, ContainableController, 
         return self._viewControllers.last
     }
     
+    public var rootView: UIView? {
+        guard let rootContainer = self.rootContainer else {
+            return nil
+        }
+        
+        switch rootContainer {
+        case .flat:
+            return self.topViewController?.view
+        case .split(let navigationSplitContainer):
+            return navigationSplitContainer.view
+        }
+    }
+    
     var topOverlayController: ViewController? {
         if let overlayContainer = self.overlayContainers.last {
             return overlayContainer.controller

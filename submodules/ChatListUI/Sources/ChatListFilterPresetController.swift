@@ -1971,6 +1971,10 @@ private final class ContextControllerContentSourceImpl: ContextControllerContent
     
     let passthroughTouches: Bool = true
     
+    var sourceBackgroundColor: UIColor? {
+        return nil
+    }
+    
     init(controller: ViewController, sourceNode: ASDisplayNode?) {
         self.controller = controller
         self.sourceNode = sourceNode

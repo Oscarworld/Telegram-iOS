@@ -449,11 +449,15 @@ public final class ChatListTitleView: UIView, NavigationBarTitleView, Navigation
     }
     
     public func makeTransitionMirrorNode() -> ASDisplayNode {
-        let snapshotView = self.snapshotView(afterScreenUpdates: false)
+        let snapshotView = self.snapshotView(afterScreenUpdates: true)
         
         return ASDisplayNode(viewBlock: {
             return snapshotView ?? UIView()
         }, didLoad: nil)
+    }
+    
+    public func titleSize() -> CGSize? {
+        return self.titleNode.frame.size
     }
     
     public func animateLayoutTransition() {

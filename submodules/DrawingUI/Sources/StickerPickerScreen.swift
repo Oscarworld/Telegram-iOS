@@ -2103,6 +2103,8 @@ private final class ContextControllerContentSourceImpl: ContextControllerContent
     
     let passthroughTouches: Bool = false
     
+    var sourceBackgroundColor: UIColor?
+    
     init(controller: ViewController, sourceView: UIView?, sourceRect: CGRect) {
         self.controller = controller
         self.sourceView = sourceView

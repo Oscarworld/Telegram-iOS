@@ -1504,6 +1504,18 @@ open class NavigationBar: ASDisplayNode {
         }
     }
     
+    public func titleSize() -> CGSize? {
+        if let titleView = self.titleView {
+            if let transitionView = titleView as? NavigationBarTitleTransitionNode {
+                return transitionView.titleSize()
+            } else {
+                return nil
+            }
+        } else {
+            return nil
+        }
+    }
+    
     public func makeTransitionBackButtonNode(accentColor: UIColor) -> NavigationButtonNode? {
         if self.backButtonNode.supernode != nil {
             let node = NavigationButtonNode()

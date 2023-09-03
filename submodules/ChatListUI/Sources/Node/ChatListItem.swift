@@ -974,6 +974,8 @@ class ChatListItemNode: ItemListRevealOptionsItemNode {
     private var hierarchyTrackingLayer: HierarchyTrackingLayer?
     private var cachedDataDisposable = MetaDisposable()
     
+    private var activationShadow = Shadow(color: UIColor(rgb: 0x000000, alpha: 0.2), radius: 3.0, offset: .zero)
+    
     private var currentTextLeftCutout: CGFloat = 0.0
     private var currentMediaPreviewSpecs: [(message: EngineMessage, media: EngineMedia, size: CGSize)] = []
     private var mediaPreviewNodes: [EngineMedia.Id: ChatListMediaPreviewNode] = [:]
@@ -1274,6 +1276,13 @@ class ChatListItemNode: ItemListRevealOptionsItemNode {
             }
         })
         
+        self.contextContainer.customContextTransitionInfo = { [weak self] in
+            guard let strongSelf = self else {
+                return (nil,  nil)
+            }
+            return (strongSelf.avatarContainerNode.view, strongSelf.mainContentContainerNode.view)
+        }
+        
         self.contextContainer.shouldBegin = { [weak self] location in
             guard let strongSelf = self, let item = strongSelf.item else {
                 return false
@@ -1295,6 +1304,58 @@ class ChatListItemNode: ItemListRevealOptionsItemNode {
             }
             
             return true
+        }
+        
+        self.contextContainer.customActivationProgress = { [weak self] progress, update in
+            guard let strongSelf = self else {
+                return
+            }
+            
+            let targetNode = strongSelf
+            let targetContentRect = CGRect(origin: CGPoint(), size: targetNode.bounds.size)
+            
+            let scaleSide = targetContentRect.width
+            let maxScale: CGFloat = min(1.3, (scaleSide + 15.0) / scaleSide)
+            let currentScale: CGFloat
+            if case .ended = update {
+                currentScale = maxScale
+            } else {
+                currentScale = 1.0 * (1.0 - progress) + maxScale * progress
+            }
+            
+            let originalCenterOffsetX: CGFloat = targetNode.bounds.width / 2.0 - targetContentRect.midX
+            let scaledCenterOffsetX: CGFloat = originalCenterOffsetX * currentScale
+            
+            let originalCenterOffsetY: CGFloat = targetNode.bounds.height / 2.0 - targetContentRect.midY
+            let scaledCenterOffsetY: CGFloat = originalCenterOffsetY * currentScale
+            
+            let scaleMidX: CGFloat = scaledCenterOffsetX - originalCenterOffsetX
+            let scaleMidY: CGFloat = scaledCenterOffsetY - originalCenterOffsetY
+            
+            switch update {
+            case .update:
+                let sublayerTransform = CATransform3DTranslate(CATransform3DScale(CATransform3DIdentity, currentScale, currentScale, 1.0), scaleMidX, scaleMidY, 0.0)
+                targetNode.layer.sublayerTransform = sublayerTransform
+                targetNode.shadowColor = strongSelf.activationShadow.color.cgColor
+                targetNode.shadowOffset = strongSelf.activationShadow.offset
+                targetNode.shadowRadius = strongSelf.activationShadow.radius
+                targetNode.shadowOpacity = progress
+            case .begin:
+                let sublayerTransform = CATransform3DTranslate(CATransform3DScale(CATransform3DIdentity, currentScale, currentScale, 1.0), scaleMidX, scaleMidY, 0.0)
+                targetNode.layer.sublayerTransform = sublayerTransform
+            case .ended:
+                let sublayerTransform = CATransform3DTranslate(CATransform3DScale(CATransform3DIdentity, currentScale, currentScale, 1.0), scaleMidX, scaleMidY, 0.0)
+                targetNode.layer.sublayerTransform = sublayerTransform
+                
+                DispatchQueue.main.asyncAfter(deadline: DispatchTime.now() + 0.2, execute: { [weak targetNode] in
+                    targetNode?.layer.sublayerTransform = CATransform3DIdentity
+                    targetNode?.shadowColor = nil
+                    targetNode?.shadowOffset = CGSize.zero
+                    targetNode?.shadowRadius = 0.0
+                    targetNode?.shadowOpacity = 0.0
+                })
+            }
+                   
         }
         
         self.contextContainer.activated = { [weak self] gesture, location in
